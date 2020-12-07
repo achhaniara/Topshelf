@@ -15,12 +15,11 @@ namespace Topshelf.Hosts
     using System;
     using System.Diagnostics;
     using System.IO;
+    using System.Runtime.InteropServices;
     using System.Threading;
     using System.Threading.Tasks;
     using Logging;
-#if !NETCORE
     using Microsoft.Win32;
-#endif
     using Runtime;
 
 
@@ -28,6 +27,9 @@ namespace Topshelf.Hosts
         Host,
         HostControl
     {
+
+        [DllImport("kernel32.dll")]
+        static extern IntPtr GetConsoleWindow();
         readonly LogWriter _log = HostLogger.Get<ConsoleRunHost>();
         readonly HostEnvironment _environment;
         readonly ServiceHandle _serviceHandle;
@@ -49,7 +51,6 @@ namespace Topshelf.Hosts
             _environment = environment;
             _serviceHandle = serviceHandle;
 
-#if !NETCORE
             if (settings.CanSessionChanged)
             {
                 SystemEvents.SessionSwitch += OnSessionChanged;
@@ -59,7 +60,6 @@ namespace Topshelf.Hosts
             {
                 SystemEvents.PowerModeChanged += OnPowerModeChanged;
             }
-    #endif
         }
 
         public TopshelfExitCode Run()
@@ -68,16 +68,24 @@ namespace Topshelf.Hosts
 
             AppDomain.CurrentDomain.UnhandledException += CatchUnhandledException;
 
-            if (_environment.IsServiceInstalled(_settings.ServiceName))
+#if NETCORE
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
-                if (!_environment.IsServiceStopped(_settings.ServiceName))
+#endif
+                if (_environment.IsServiceInstalled(_settings.ServiceName))
                 {
-                    _log.ErrorFormat("The {0} service is running and must be stopped before running via the console",
-                        _settings.ServiceName);
+                    if (!_environment.IsServiceStopped(_settings.ServiceName))
+                    {
+                        _log.ErrorFormat(
+                            "The {0} service is running and must be stopped before running via the console",
+                            _settings.ServiceName);
 
-                    return TopshelfExitCode.ServiceAlreadyRunning;
+                        return TopshelfExitCode.ServiceAlreadyRunning;
+                    }
                 }
+#if NETCORE
             }
+#endif
 
             bool started = false;
             try
@@ -86,8 +94,23 @@ namespace Topshelf.Hosts
 
                 _exit = new ManualResetEvent(false);
                 _exitCode = TopshelfExitCode.Ok;
-
-                Console.Title = _settings.DisplayName;
+                if (
+#if NETCORE
+                    !RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ||
+#endif
+                     IntPtr.Zero != GetConsoleWindow())
+                {
+                    try
+                    {
+                        // It is common to run console applications in windowless mode, this prevents
+                        // the process from crashing when attempting to set the title.
+                        Console.Title = _settings.DisplayName;
+                    }
+                    catch(Exception e) when (e is IOException || e is PlatformNotSupportedException)
+                    {
+                        _log.Info("It was not possible to set the console window title. See the inner exception for details.", e);
+                    }
+                }
                 Console.CancelKeyPress += HandleCancelKeyPress;
 
                 if (!_serviceHandle.Start(this))
@@ -170,7 +193,11 @@ namespace Topshelf.Hosts
                 // this is evil, but perhaps a good thing to let us clean up properly.
                 int deadThreadId = Interlocked.Increment(ref _deadThread);
                 Thread.CurrentThread.IsBackground = true;
-                Thread.CurrentThread.Name = "Unhandled Exception " + deadThreadId.ToString();
+                
+                // Only set name if thread does not already have one.
+                if (Thread.CurrentThread.Name == null)
+                    Thread.CurrentThread.Name = "Unhandled Exception " + deadThreadId.ToString();
+
                 while (true)
                     Thread.Sleep(TimeSpan.FromHours(1));
             }
@@ -207,10 +234,13 @@ namespace Topshelf.Hosts
 
         void HandleCancelKeyPress(object sender, ConsoleCancelEventArgs consoleCancelEventArgs)
         {
-            if (consoleCancelEventArgs.SpecialKey == ConsoleSpecialKey.ControlBreak)
+            if (!_settings.CanHandleCtrlBreak)
             {
-                _log.Error("Control+Break detected, terminating service (not cleanly, use Control+C to exit cleanly)");
-                return;
+                if (consoleCancelEventArgs.SpecialKey == ConsoleSpecialKey.ControlBreak)
+                {
+                    _log.Error("Control+Break detected, terminating service (not cleanly, use Control+C to exit cleanly)");
+                    return;
+                }
             }
 
             consoleCancelEventArgs.Cancel = true;
@@ -218,7 +248,7 @@ namespace Topshelf.Hosts
             if (_hasCancelled)
                 return;
 
-            _log.Info("Control+C detected, attempting to stop service.");
+            _log.InfoFormat("Control+{0} detected, attempting to stop service.", consoleCancelEventArgs.SpecialKey == ConsoleSpecialKey.ControlBreak ? "Break" : "C");
             if (_serviceHandle.Stop(this))
             {
                 _hasCancelled = true;
@@ -231,7 +261,6 @@ namespace Topshelf.Hosts
             }
         }
 
-#if !NETCORE
         void OnSessionChanged(object sender, SessionSwitchEventArgs e)
         {
             var arguments = new ConsoleSessionChangedArguments(e.Reason);
@@ -284,6 +313,5 @@ namespace Topshelf.Hosts
 
             public PowerEventCode EventCode { get; }
         }
-#endif
     }
 }

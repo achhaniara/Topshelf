@@ -15,6 +15,7 @@ namespace Topshelf.HostConfigurators
     using System;
     using System.Collections.Generic;
     using System.Linq;
+    using System.Runtime.InteropServices;
     using Builders;
     using CommandLineParser;
     using Configurators;
@@ -131,6 +132,16 @@ namespace Topshelf.HostConfigurators
             _settings.CanSessionChanged = true;
         }
 
+        public void EnablePowerEvents()
+        {
+            _settings.CanHandlePowerEvent = true;
+        }
+
+        public void EnableHandleCtrlBreak()
+        {
+            _settings.CanHandleCtrlBreak = true;
+        }
+
         public void UseHostBuilder(HostBuilderFactory hostBuilderFactory)
         {
             _hostBuilderFactory = hostBuilderFactory;
@@ -197,8 +208,8 @@ namespace Topshelf.HostConfigurators
         {
             Type type = typeof(HostFactory);
             HostLogger.Get<HostConfiguratorImpl>()
-                .InfoFormat("{0} v{1}, .NET Framework v{2}", type.Namespace, type.Assembly.GetName().Version,
-                    Environment.Version);
+                .InfoFormat("{0} v{1}, {2} ({3})", type.Namespace, type.Assembly.GetName().Version,
+                    RuntimeInformation.FrameworkDescription, Environment.Version);
 
             EnvironmentBuilder environmentBuilder = _environmentBuilderFactory(this);
 
